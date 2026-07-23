@@ -603,6 +603,37 @@
   .confirm-btn:hover{ transform:translateY(-1px); }
   .confirm-btn.cancel{ background:rgba(28,27,25,0.08); color:var(--ink); }
   .confirm-btn.confirm-delete{ background:var(--coral); color:#fffdf8; }
+  .confirm-btn.confirm-create{ background:var(--ink); color:var(--canvas); }
+
+  /* ---------- Name-map dialog ---------- */
+  #name-overlay{
+    position:fixed; inset:0; background:rgba(28,27,25,0.35);
+    display:none; align-items:center; justify-content:center;
+    z-index:1000; backdrop-filter: blur(2px);
+  }
+  #name-overlay.open{ display:flex; }
+  #name-box{
+    background:var(--paper); border-radius:16px; box-shadow:var(--shadow);
+    padding:22px 24px; width:300px; text-align:center;
+    border:1px solid rgba(28,27,25,0.08);
+    animation: popIn .15s ease;
+  }
+  #name-box .confirm-title{
+    font-family:'Caveat', cursive; font-weight:700; font-size:22px;
+    color:var(--ink); margin-bottom:12px; display:block;
+  }
+  #name-input{
+    width:100%; font-family:'Inter', sans-serif; font-size:14px; color:var(--ink);
+    border:1.5px solid rgba(28,27,25,0.15); border-radius:10px;
+    padding:9px 12px; outline:none; background:#fff;
+    transition: border-color .12s ease;
+  }
+  #name-input:focus{ border-color: var(--gold); }
+  #name-error{
+    font-family:'Inter', sans-serif; font-size:12px; color:var(--coral);
+    margin:8px 0 0; line-height:1.4; text-align:left; display:none;
+  }
+  #name-actions{ display:flex; gap:8px; justify-content:center; margin-top:16px; }
 </style>
 </head>
 <body>
@@ -839,6 +870,18 @@
   </div>
 </div>
 
+<div id="name-overlay">
+  <div id="name-box">
+    <span class="confirm-title" id="name-title">Name this mind map</span>
+    <input id="name-input" type="text" placeholder="e.g. Product Launch Plan" maxlength="60">
+    <p id="name-error"></p>
+    <div id="name-actions">
+      <button class="confirm-btn cancel" id="name-cancel">Cancel</button>
+      <button class="confirm-btn confirm-create" id="name-ok">Create</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (() => {
   const worldWrap = document.getElementById('world-wrap');
@@ -1019,17 +1062,24 @@
     return id;
   }
   function newMapTab(){
-    persistCurrentMap();
-    const id = createMapEntry('Untitled map');
-    currentMapId = id;
-    try{ localStorage.setItem('branch.maps.active', id); }catch(e){}
-    state = freshMapState();
-    selectedId = state.rootId;
-    multiSelection = [];
-    view = { x: window.innerWidth/2, y: window.innerHeight/2, scale: 1 };
-    history = []; future = [];
-    renderAll();
-    persistCurrentMap();
+    promptMapName({
+      title: 'Name this mind map',
+      placeholder: 'e.g. Product Launch Plan',
+      onConfirm: (name) => {
+        persistCurrentMap();
+        const id = createMapEntry(name);
+        currentMapId = id;
+        try{ localStorage.setItem('branch.maps.active', id); }catch(e){}
+        state = freshMapState();
+        state.nodes[state.rootId].text = name;
+        selectedId = state.rootId;
+        multiSelection = [];
+        view = { x: window.innerWidth/2, y: window.innerHeight/2, scale: 1 };
+        history = []; future = [];
+        renderAll();
+        persistCurrentMap();
+      }
+    });
   }
   function loadMap(id){
     let saved = null;
@@ -2334,6 +2384,71 @@
   confirmOverlay.addEventListener('mousedown', (e) => {
     if (e.target === confirmOverlay) closeConfirm();
   });
+
+  // ---------- Name-map dialog ----------
+  const nameOverlay = document.getElementById('name-overlay');
+  const nameTitleEl = document.getElementById('name-title');
+  const nameInput = document.getElementById('name-input');
+  const nameError = document.getElementById('name-error');
+  const nameOkBtn = document.getElementById('name-ok');
+  const nameCancelBtn = document.getElementById('name-cancel');
+  let pendingNameAction = null;
+
+  function existingMapTitles(excludeId){
+    return loadIndex().filter(m => m.id !== excludeId).map(m => (m.title || '').trim().toLowerCase());
+  }
+  function promptMapName(opts){
+    const { title = 'Name this mind map', placeholder = 'e.g. Product Launch Plan', value = '', excludeId = null, onConfirm } = opts;
+    nameTitleEl.textContent = title;
+    nameInput.placeholder = placeholder;
+    nameInput.value = value;
+    nameError.style.display = 'none';
+    nameError.textContent = '';
+    pendingNameAction = { excludeId, onConfirm };
+    nameOverlay.classList.add('open');
+    setTimeout(() => { nameInput.focus(); nameInput.select(); }, 0);
+  }
+  function closeNamePrompt(){
+    nameOverlay.classList.remove('open');
+    pendingNameAction = null;
+  }
+  function isNamePromptOpen(){
+    return nameOverlay.classList.contains('open');
+  }
+  function submitNamePrompt(){
+    if (!pendingNameAction) return;
+    const raw = nameInput.value.trim();
+    if (!raw){
+      nameError.textContent = 'Please give this mind map a name.';
+      nameError.style.display = 'block';
+      nameInput.focus();
+      return;
+    }
+    if (existingMapTitles(pendingNameAction.excludeId).includes(raw.toLowerCase())){
+      nameError.textContent = 'That name is already used by another tab. Please choose a different name.';
+      nameError.style.display = 'block';
+      nameInput.focus();
+      nameInput.select();
+      return;
+    }
+    const action = pendingNameAction.onConfirm;
+    closeNamePrompt();
+    action(raw);
+  }
+  nameOkBtn.addEventListener('click', submitNamePrompt);
+  nameCancelBtn.addEventListener('click', closeNamePrompt);
+  nameOverlay.addEventListener('mousedown', (e) => {
+    if (e.target === nameOverlay) closeNamePrompt();
+  });
+  nameInput.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter'){ e.preventDefault(); submitNamePrompt(); }
+    if (e.key === 'Escape'){ e.preventDefault(); closeNamePrompt(); }
+  });
+  nameInput.addEventListener('input', () => {
+    if (nameError.style.display !== 'none'){ nameError.style.display = 'none'; }
+  });
+
   document.addEventListener('keydown', (e) => {
     if (!isConfirmOpen()) return;
     if (e.key === 'Escape'){
@@ -2502,6 +2617,7 @@
 
   document.addEventListener('keydown', (e) => {
     if (isConfirmOpen()) return;
+    if (isNamePromptOpen()) return;
     if (isEditingActive()) return;
     const activeEl = document.activeElement;
     const inInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
