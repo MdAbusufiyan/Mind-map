@@ -47,7 +47,7 @@
   }
   svg#links{
     position:absolute; overflow:visible; pointer-events:none;
-    top:0; left:0;
+    top:0; left:0; width:1px; height:1px; transform-origin: 0 0;
   }
   svg#links path.link{
     stroke-linecap: round;
@@ -378,7 +378,17 @@
     grid-template-columns:repeat(7, 1fr);
     gap:6px;
   }
-  #current-color-row{ display:flex; align-items:center; gap:10px; border-top:1px solid rgba(28,27,25,0.1); padding-top:9px; }
+  #current-color-row, #bg-current-color-row{ display:flex; align-items:center; gap:10px; border-top:1px solid rgba(28,27,25,0.1); padding-top:9px; }
+  #bg-fixed-colors{ display:grid; grid-template-columns:repeat(7, 1fr); gap:6px; }
+  #bg-color-picker{
+    width:44px; height:34px; padding:0;
+    border:1px solid rgba(28,27,25,0.16);
+    border-radius:10px; background:transparent; cursor:pointer;
+  }
+  #bg-color-picker::-webkit-color-swatch-wrapper{ padding:0; }
+  #bg-color-picker::-webkit-color-swatch{ border:none; border-radius:9px; }
+  #bg-color-picker::-moz-color-swatch{ border:none; border-radius:9px; }
+  #bg-current-color-text{ font-family:'Inter', sans-serif; font-size:12px; color:var(--ink-soft); min-width:0; }
   .palette-small-label{
     font-family:'Inter', sans-serif;
     font-size:11px;
@@ -484,7 +494,7 @@
     box-shadow: 0 0 0 3px rgba(63,122,118,0.35), var(--shadow);
   }
 
-  svg#shapes-layer{ position:absolute; overflow:visible; top:0; left:0; }
+  svg#shapes-layer{ position:absolute; overflow:visible; top:0; left:0; width:1px; height:1px; transform-origin: 0 0; }
   .shape-hit{ cursor:pointer; }
   .shape-hit.selected{ }
   .group-boundary{ pointer-events:none; }
@@ -746,16 +756,6 @@
       </div>
     </div>
   </div>
-  <!-- <div class="sp-section open" id="sp-lines-section">
-    <button class="sp-section-header" type="button">Lines</button>
-    <div class="sp-section-body">
-      <div class="sp-row" id="sp-stroke-row">
-        <span class="sp-title">Outline</span>
-        <button class="sp-toggle active" data-stroke="solid">Solid</button>
-        <button class="sp-toggle" data-stroke="dashed">Dashed</button>
-      </div>
-    </div>
-  </div> -->
   <div class="sp-row">
     <button class="sp-delete" id="sp-delete">Delete</button>
   </div>
@@ -778,6 +778,25 @@
         <span class="palette-small-label">Custom</span>
         <input id="color-picker" type="color" value="#c08a2e" title="Choose color">
         <span id="current-color-text">#c08a2e</span>
+      </div>
+    </div>
+  </div>
+  <div class="palette-card" id="bg-card">
+    <div class="palette-card-header" id="bg-toggle">Background</div>
+    <div class="palette-card-body" id="palette-bg">
+      <div id="bg-fixed-colors">
+        <button class="swatch active" type="button" style="background:#e2f2f3" data-color="#e2f2f3" title="Sky"></button>
+        <button class="swatch" type="button" style="background:#f3ede2" data-color="#f3ede2" title="Cream"></button>
+        <button class="swatch" type="button" style="background:#eef2e2" data-color="#eef2e2" title="Sage"></button>
+        <button class="swatch" type="button" style="background:#f2e6ef" data-color="#f2e6ef" title="Blush"></button>
+        <button class="swatch" type="button" style="background:#e7e7ef" data-color="#e7e7ef" title="Lavender"></button>
+        <button class="swatch" type="button" style="background:#fdf1e0" data-color="#fdf1e0" title="Sand"></button>
+        <button class="swatch" type="button" style="background:#1c1b19" data-color="#1c1b19" title="Ink"></button>
+      </div>
+      <div id="bg-current-color-row">
+        <span class="palette-small-label">Custom</span>
+        <input id="bg-color-picker" type="color" value="#e2f2f3" title="Choose background color">
+        <span id="bg-current-color-text">#e2f2f3</span>
       </div>
     </div>
   </div>
@@ -916,6 +935,7 @@
     if (!state.shapes) state.shapes = {};
     if (!state.groups) state.groups = {};
     if (!state.linkStyle) state.linkStyle = 'plain';
+    if (!state.background) state.background = DEFAULT_BG;
     selectedId = data.selectedId;
     multiSelection = [];
     renderAll();
@@ -943,7 +963,8 @@
       shapes: {},
       groups: {},
       rootId,
-      linkStyle: 'plain'
+      linkStyle: 'plain',
+      background: DEFAULT_BG
     };
     selectedId = rootId;
     multiSelection = [];
@@ -987,7 +1008,7 @@
     const rootId = uid();
     return {
       nodes: { [rootId]: { id: rootId, parent: null, text: 'Central Idea', x: 0, y: 0, color: '#c08a2e', collapsed: false, depth: 0 } },
-      shapes: {}, groups: {}, rootId, linkStyle: 'plain'
+      shapes: {}, groups: {}, rootId, linkStyle: 'plain', background: DEFAULT_BG
     };
   }
   function createMapEntry(title){
@@ -1020,6 +1041,7 @@
     if (!state.shapes) state.shapes = {};
     if (!state.groups) state.groups = {};
     if (!state.linkStyle) state.linkStyle = 'plain';
+    if (!state.background) state.background = DEFAULT_BG;
     view = saved.view || { x: window.innerWidth/2, y: window.innerHeight/2, scale: 1 };
     selectedId = state.rootId;
     multiSelection = [];
@@ -1198,6 +1220,8 @@
     }
     const parentId = n.parent;
     toDelete.forEach(d => delete state.nodes[d]);
+    multiSelection = multiSelection.filter(item => item.kind !== 'node' || state.nodes[item.id]);
+    cleanupGroups();
     renderAll();
     selectNode(parentId);
   }
@@ -1270,6 +1294,7 @@
     renderLinks(nodes);
     renderShapes();
     applyTransform();
+    applyBackground();
     selectNode(selectedId);
     applyMultiSelectVisuals();
     updateShapePanel();
@@ -1752,7 +1777,6 @@
   const spOpacity = document.getElementById('sp-opacity');
   const spDelete = document.getElementById('sp-delete');
   const spColorsSection = document.getElementById('sp-colors-section');
-  const spLinesSection = document.getElementById('sp-lines-section');
   const paletteToggle = document.getElementById('palette-toggle');
   const colorCard = document.getElementById('color-card');
   const lineToggle = document.getElementById('line-toggle');
@@ -1843,6 +1867,42 @@
     });
   });
 
+  // ---------- Canvas background color ----------
+  const DEFAULT_BG = '#e2f2f3';
+  const bgColorPicker = document.getElementById('bg-color-picker');
+  const bgCurrentColorText = document.getElementById('bg-current-color-text');
+  let bgDragHistoryPushed = false;
+
+  function applyBackground(){
+    const bg = state.background || DEFAULT_BG;
+    worldWrap.style.backgroundColor = bg;
+    bgColorPicker.value = bg;
+    bgCurrentColorText.textContent = bg;
+    document.querySelectorAll('#bg-fixed-colors .swatch').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.color === bg);
+    });
+  }
+  function setBackground(hex){
+    state.background = rgbToHex(...Object.values(hexToRgb(hex)));
+    applyBackground();
+    scheduleAutosave();
+  }
+  document.querySelectorAll('#bg-fixed-colors .swatch').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pushHistory();
+      setBackground(btn.dataset.color);
+    });
+  });
+  bgColorPicker.addEventListener('pointerdown', () => {
+    if (!bgDragHistoryPushed){ pushHistory(); bgDragHistoryPushed = true; }
+  });
+  bgColorPicker.addEventListener('input', () => setBackground(bgColorPicker.value));
+  bgColorPicker.addEventListener('change', () => { bgDragHistoryPushed = false; });
+
+  const bgToggle = document.getElementById('bg-toggle');
+  const bgCard = document.getElementById('bg-card');
+  if (bgToggle && bgCard){ bgToggle.addEventListener('click', () => bgCard.classList.toggle('open')); }
+
   function updateLinkStyleControls(){
     document.querySelectorAll('[data-link-style]').forEach(b => {
       b.classList.toggle('active', b.dataset.linkStyle === (state.linkStyle || 'plain'));
@@ -1861,7 +1921,6 @@
     document.getElementById('sp-label-row').style.display = 'flex';
     document.getElementById('sp-label').placeholder = isGroup ? 'Partition label…' : 'Add text…';
     document.getElementById('sp-pos-row').style.display = isGroup ? 'none' : 'flex';
-    document.getElementById('sp-stroke-row').style.display = isGroup ? 'none' : 'flex';
     spLabel.value = target.obj.label || '';
     if (!isGroup){
       const pos = target.obj.labelPos || 'center';
@@ -1871,11 +1930,7 @@
     document.querySelectorAll('.sp-swatch').forEach(s => s.classList.toggle('active', s.dataset.color === color));
     spOpacity.value = isGroup ? (typeof target.obj.opacity === 'number' ? target.obj.opacity : 6) : (typeof target.obj.opacity === 'number' ? target.obj.opacity : 14);
     setActiveColor(color, spOpacity.value, { apply: false });
-    spColorsSection.classList.remove('open');
-    spLinesSection.classList.add('open');
-    if (!isGroup){
-      document.querySelectorAll('[data-stroke]').forEach(b => b.classList.toggle('active', b.dataset.stroke === (target.obj.stroke || 'solid')));
-    }
+    spColorsSection.classList.add('open');
     updateLinkStyleControls();
   }
 
@@ -1918,17 +1973,6 @@
       pushHistory();
       target.obj.labelPos = btn.dataset.pos;
       document.querySelectorAll('.sp-pos-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      renderShapes();
-    });
-  });
-  document.querySelectorAll('[data-stroke]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const target = currentPanelTarget();
-      if (!target || target.kind !== 'shape' || !target.obj) return;
-      pushHistory();
-      target.obj.stroke = btn.dataset.stroke;
-      document.querySelectorAll('[data-stroke]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       renderShapes();
     });
@@ -2603,6 +2647,7 @@
         if (!state.shapes) state.shapes = {};
         if (!state.groups) state.groups = {};
         if (!state.linkStyle) state.linkStyle = 'plain';
+        if (!state.background) state.background = DEFAULT_BG;
         if (data.view) view = data.view;
         selectedId = state.rootId;
         idCounter = Object.keys(state.nodes).length + 1000;
@@ -2635,7 +2680,7 @@
     const bg = document.createElementNS(svgNS, 'rect');
     bg.setAttribute('x', minX); bg.setAttribute('y', minY);
     bg.setAttribute('width', w); bg.setAttribute('height', h);
-    bg.setAttribute('fill', '#f3ede2');
+    bg.setAttribute('fill', state.background || DEFAULT_BG);
     exportSvg.appendChild(bg);
 
     const set = new Set(nodes.map(n=>n.id));
@@ -2723,7 +2768,7 @@
         canvas.height = h * scale;
         const ctx = canvas.getContext('2d');
         ctx.scale(scale, scale);
-        ctx.fillStyle = '#f3ede2';
+        ctx.fillStyle = state.background || DEFAULT_BG;
         ctx.fillRect(0,0,w,h);
         ctx.drawImage(img, 0, 0, w, h);
         URL.revokeObjectURL(url);
@@ -2803,7 +2848,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Patrick+Hand&display=swap" rel="stylesheet">
 <style>
-  html,body{ margin:0; height:100%; background:#f3ede2; overflow:auto;
+  html,body{ margin:0; height:100%; background:${escapeHtml(state.background || DEFAULT_BG)}; overflow:auto;
     font-family:'Patrick Hand', cursive; }
   #wrap{ min-height:100%; display:flex; align-items:center; justify-content:center; padding:32px; }
   svg{ max-width:100%; height:auto; }
