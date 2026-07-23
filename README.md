@@ -240,4 +240,4 @@ The application executes entirely on the client side.
 
 # License
 
-MIT License.
+Apache License 2.0
