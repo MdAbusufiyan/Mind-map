@@ -634,6 +634,31 @@
     margin:8px 0 0; line-height:1.4; text-align:left; display:none;
   }
   #name-actions{ display:flex; gap:8px; justify-content:center; margin-top:16px; }
+
+  /* ---------- Scope (this map / all maps) dialog ---------- */
+  #scope-overlay{
+    position:fixed; inset:0; background:rgba(28,27,25,0.35);
+    display:none; align-items:center; justify-content:center;
+    z-index:1000; backdrop-filter: blur(2px);
+  }
+  #scope-overlay.open{ display:flex; }
+  #scope-box{
+    background:var(--paper); border-radius:16px; box-shadow:var(--shadow);
+    padding:22px 24px; width:320px; text-align:center;
+    border:1px solid rgba(28,27,25,0.08);
+    animation: popIn .15s ease;
+  }
+  #scope-box .confirm-title{
+    font-family:'Caveat', cursive; font-weight:700; font-size:22px;
+    color:var(--ink); margin-bottom:6px; display:block;
+  }
+  #scope-box p{
+    font-family:'Inter', sans-serif; font-size:13.5px; color:var(--ink-soft);
+    margin:0 0 16px 0; line-height:1.45;
+  }
+  #scope-actions{ display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+  .confirm-btn.scope-current{ background:rgba(28,27,25,0.08); color:var(--ink); }
+  .confirm-btn.scope-all{ background:var(--ink); color:var(--canvas); }
 </style>
 </head>
 <body>
@@ -882,6 +907,18 @@
   </div>
 </div>
 
+<div id="scope-overlay">
+  <div id="scope-box">
+    <span class="confirm-title" id="scope-title">Save</span>
+    <p id="scope-message">You have multiple mind maps open. What would you like to do?</p>
+    <div id="scope-actions">
+      <button class="confirm-btn cancel" id="scope-cancel">Cancel</button>
+      <button class="confirm-btn scope-current" id="scope-current-btn">This map</button>
+      <button class="confirm-btn scope-all" id="scope-all-btn">All maps</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (() => {
   const worldWrap = document.getElementById('world-wrap');
@@ -1126,6 +1163,25 @@
       const newTitle = titleEl.textContent.trim() || 'Untitled map';
       if (entry){ entry.title = newTitle; saveIndex(idx); }
       titleEl.textContent = newTitle;
+      // Keep the map's central card text in sync with the tab name. Without this,
+      // exports (and mapTitle()) kept reading the old central-card text, and the
+      // next autosave would silently snap the tab label back to it too.
+      if (id === currentMapId){
+        if (state.rootId && state.nodes[state.rootId] && state.nodes[state.rootId].text !== newTitle){
+          pushHistory();
+          state.nodes[state.rootId].text = newTitle;
+          renderAll();
+        }
+        persistCurrentMap();
+      } else {
+        try{
+          const saved = JSON.parse(localStorage.getItem('branch.map.' + id));
+          if (saved && saved.state && saved.state.rootId && saved.state.nodes[saved.state.rootId]){
+            saved.state.nodes[saved.state.rootId].text = newTitle;
+            localStorage.setItem('branch.map.' + id, JSON.stringify(saved));
+          }
+        }catch(e){}
+      }
       titleEl.removeEventListener('blur', commit);
       titleEl.removeEventListener('keydown', onKey);
     }
@@ -2449,6 +2505,50 @@
     if (nameError.style.display !== 'none'){ nameError.style.display = 'none'; }
   });
 
+  // ---------- Scope dialog (this map / all maps) ----------
+  const scopeOverlay = document.getElementById('scope-overlay');
+  const scopeTitleEl = document.getElementById('scope-title');
+  const scopeMessageEl = document.getElementById('scope-message');
+  const scopeCancelBtn = document.getElementById('scope-cancel');
+  const scopeCurrentBtn = document.getElementById('scope-current-btn');
+  const scopeAllBtn = document.getElementById('scope-all-btn');
+  let pendingScopeAction = null;
+
+  function promptExportScope(opts){
+    const { title = 'Export', message = '', currentLabel = 'This map', allLabel = 'All maps', onCurrent, onAll } = opts;
+    scopeTitleEl.textContent = title;
+    scopeMessageEl.textContent = message;
+    scopeCurrentBtn.textContent = currentLabel;
+    scopeAllBtn.textContent = allLabel;
+    pendingScopeAction = { onCurrent, onAll };
+    scopeOverlay.classList.add('open');
+  }
+  function closeScopePrompt(){
+    scopeOverlay.classList.remove('open');
+    pendingScopeAction = null;
+  }
+  function isScopePromptOpen(){
+    return scopeOverlay.classList.contains('open');
+  }
+  scopeCancelBtn.addEventListener('click', closeScopePrompt);
+  scopeCurrentBtn.addEventListener('click', () => {
+    const action = pendingScopeAction;
+    closeScopePrompt();
+    if (action && action.onCurrent) action.onCurrent();
+  });
+  scopeAllBtn.addEventListener('click', () => {
+    const action = pendingScopeAction;
+    closeScopePrompt();
+    if (action && action.onAll) action.onAll();
+  });
+  scopeOverlay.addEventListener('mousedown', (e) => {
+    if (e.target === scopeOverlay) closeScopePrompt();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!isScopePromptOpen()) return;
+    if (e.key === 'Escape'){ e.preventDefault(); e.stopImmediatePropagation(); closeScopePrompt(); }
+  });
+
   document.addEventListener('keydown', (e) => {
     if (!isConfirmOpen()) return;
     if (e.key === 'Escape'){
@@ -2618,6 +2718,7 @@
   document.addEventListener('keydown', (e) => {
     if (isConfirmOpen()) return;
     if (isNamePromptOpen()) return;
+    if (isScopePromptOpen()) return;
     if (isEditingActive()) return;
     const activeEl = document.activeElement;
     const inInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
@@ -2740,16 +2841,96 @@
     document.getElementById('stats').textContent = `${nodeTotal} node${nodeTotal===1?'':'s'} · ${branches} branch${branches===1?'':'es'} · ${shapeTotal} shape${shapeTotal===1?'':'s'}`;
   }
 
-  document.getElementById('btn-save').onclick = () => {
-    const data = JSON.stringify({ state, view }, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
+  function safeFileName(name){
+    const base = String(name || 'mindmap').trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim();
+    return base.length ? base : 'mindmap';
+  }
+
+  function downloadBlob(filename, blob){
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'mindmap.json';
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+  function downloadJSON(filename, obj){
+    downloadBlob(filename, new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
+  }
+
+  function saveCurrentMap(){
+    downloadJSON(safeFileName(mapTitle()) + '.json', { state, view });
+  }
+  function getAllMapsData(){
+    const idx = loadIndex();
+    return idx.map(m => {
+      let st, v;
+      if (m.id === currentMapId){
+        st = state; v = view;
+      } else {
+        try{
+          const saved = JSON.parse(localStorage.getItem('branch.map.' + m.id));
+          st = saved && saved.state; v = saved && saved.view;
+        }catch(e){ st = null; }
+      }
+      if (!st) return null;
+      if (!st.shapes) st.shapes = {};
+      if (!st.groups) st.groups = {};
+      if (!st.linkStyle) st.linkStyle = 'plain';
+      if (!st.background) st.background = DEFAULT_BG;
+      return { id: m.id, title: m.title || 'Untitled map', state: st, view: v };
+    }).filter(Boolean);
+  }
+  function saveAllMaps(){
+    const maps = getAllMapsData();
+    if (!maps.length) return;
+    downloadJSON('branch-all-mindmaps.json', {
+      type: 'branch-multi-map',
+      maps: maps.map(m => ({ title: m.title, state: m.state, view: m.view }))
+    });
+  }
+
+  document.getElementById('btn-save').onclick = () => {
+    const idx = loadIndex();
+    if (idx.length > 1){
+      promptExportScope({
+        title: 'Save mind map',
+        message: `You have ${idx.length} mind maps open. Save just this one, or all of them together as one file?`,
+        currentLabel: 'This map',
+        allLabel: 'All maps',
+        onCurrent: saveCurrentMap,
+        onAll: saveAllMaps
+      });
+    } else {
+      saveCurrentMap();
+    }
   };
+
+  function importMapsBundle(maps){
+    if (!maps || !maps.length) return;
+    persistCurrentMap();
+    const idx = loadIndex();
+    const usedTitles = new Set(idx.map(m => (m.title || '').trim().toLowerCase()));
+    let firstNewId = null;
+    maps.forEach(entry => {
+      const base = (entry.title || 'Untitled map').trim() || 'Untitled map';
+      let candidate = base, n = 2;
+      while (usedTitles.has(candidate.toLowerCase())){ candidate = `${base} (${n++})`; }
+      usedTitles.add(candidate.toLowerCase());
+      const id = createMapEntry(candidate);
+      const st = entry.state || { nodes:{}, shapes:{}, groups:{}, rootId:null, linkStyle:'plain' };
+      if (!st.shapes) st.shapes = {};
+      if (!st.groups) st.groups = {};
+      if (!st.linkStyle) st.linkStyle = 'plain';
+      if (!st.background) st.background = DEFAULT_BG;
+      const v = entry.view || { x: window.innerWidth/2, y: window.innerHeight/2, scale: 1 };
+      try{ localStorage.setItem('branch.map.' + id, JSON.stringify({ state: st, view: v })); }catch(e){}
+      if (!firstNewId) firstNewId = id;
+    });
+    renderTabs();
+    if (firstNewId) loadMap(firstNewId);
+  }
+
   document.getElementById('btn-load').onclick = () => document.getElementById('file-input').click();
   document.getElementById('file-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -2758,6 +2939,10 @@
     reader.onload = (ev) => {
       try{
         const data = JSON.parse(ev.target.result);
+        if (data && data.type === 'branch-multi-map' && Array.isArray(data.maps)){
+          importMapsBundle(data.maps);
+          return;
+        }
         pushHistory();
         state = data.state || { nodes:{}, shapes:{}, groups:{}, rootId:null, linkStyle:'plain' };
         if (!state.shapes) state.shapes = {};
@@ -2777,13 +2962,200 @@
     e.target.value = '';
   });
 
-  function buildExportSVG(){
-    const nodes = visibleNodes();
-    if (nodes.length === 0) return null;
-    const pad = 120;
-    const xs = nodes.map(n=>n.x), ys = nodes.map(n=>n.y);
-    const minX = Math.min(...xs) - pad, maxX = Math.max(...xs) + pad;
-    const minY = Math.min(...ys) - pad, maxY = Math.max(...ys) + pad;
+  // ---------- High-fidelity export rendering ----------
+  // Mirrors the live card styling (per-depth font size/weight, wrapping, notes,
+  // collapsed badges, shapes and groups) so exports look like the real canvas
+  // instead of an approximate re-drawing of it.
+  const measureCanvasEl = document.createElement('canvas');
+  const measureCtx = measureCanvasEl.getContext('2d');
+  function measureTextWidth(text, font){
+    measureCtx.font = font;
+    return measureCtx.measureText(text).width;
+  }
+  function wrapText(text, font, maxWidth){
+    const words = String(text == null ? '' : text).split(/\s+/).filter(Boolean);
+    if (!words.length) return [''];
+    const lines = [];
+    let current = words[0];
+    for (let i = 1; i < words.length; i++){
+      const test = current + ' ' + words[i];
+      if (measureTextWidth(test, font) <= maxWidth || !current) current = test;
+      else { lines.push(current); current = words[i]; }
+    }
+    lines.push(current);
+    return lines;
+  }
+  const DEPTH_FONT_SIZE = { 1: 15, 2: 13.5, 3: 12.5, 4: 11.5 };
+  const DEPTH_STRIPE_WIDTH = { 1: 5, 2: 4, 3: 3, 4: 2 };
+  function nodeFontSpec(n, isRoot){
+    if (isRoot) return { family: 'Caveat, cursive', weight: 700, size: 21 };
+    const depth = Math.min(Math.max(n.depth || 1, 1), 4);
+    return { family: 'Patrick Hand, cursive', weight: depth === 1 ? 600 : 400, size: DEPTH_FONT_SIZE[depth] || 13 };
+  }
+  function exportChildren(st, id){
+    return Object.values(st.nodes).filter(n => n.parent === id);
+  }
+  function exportVisibleNodes(st){
+    const result = [];
+    const hidden = new Set();
+    function markHiddenSubtree(id){
+      hidden.add(id);
+      exportChildren(st, id).forEach(c => markHiddenSubtree(c.id));
+    }
+    function walk(id){
+      const n = st.nodes[id];
+      if (!n || hidden.has(id)) return;
+      result.push(n);
+      if (n.collapsed) exportChildren(st, id).forEach(c => markHiddenSubtree(c.id));
+      else exportChildren(st, id).forEach(c => walk(c.id));
+    }
+    if (st.rootId) walk(st.rootId);
+    return result;
+  }
+  function nodeBoxSpec(n, isRoot){
+    const font = nodeFontSpec(n, isRoot);
+    const fontCss = `${font.weight} ${font.size}px ${font.family}`;
+    const maxNodeWidth = isRoot ? 320 : 260;
+    const depth = Math.min(Math.max(n.depth || 1, 1), 4);
+    const padX = isRoot ? 26 : Math.max(13, 20 - depth * 1.5);
+    const padY = isRoot ? 12 : Math.max(8, 12 - depth);
+    const maxTextWidth = maxNodeWidth - padX * 2;
+    let textLines = wrapText(n.text, fontCss, maxTextWidth);
+    if (textLines.length > 6){
+      textLines = textLines.slice(0, 6);
+      textLines[5] = textLines[5].replace(/\s+$/, '') + '…';
+    }
+    const lineHeight = font.size * 1.32;
+    const noteFontCss = "400 11px 'Patrick Hand', cursive";
+    let noteLines = [];
+    if (n.note){
+      noteLines = wrapText(n.note, noteFontCss, maxTextWidth);
+      if (noteLines.length > 3){ noteLines = noteLines.slice(0, 3); noteLines[2] = noteLines[2].replace(/\s+$/, '') + '…'; }
+    }
+    const noteLineHeight = 11 * 1.3;
+    // measureText() can slightly under-report actual glyph advance width for handwritten
+    // fonts, which let text brush right up against the card edge — pad the measurement.
+    const TEXT_SAFETY = 1.08;
+    const textBlockWidth = Math.max(...textLines.map(l => measureTextWidth(l, fontCss) * TEXT_SAFETY), 24);
+    const noteBlockWidth = noteLines.length ? Math.max(...noteLines.map(l => measureTextWidth(l, noteFontCss) * TEXT_SAFETY), 0) : 0;
+    const innerWidth = Math.max(textBlockWidth, noteBlockWidth);
+    const width = Math.min(maxNodeWidth, innerWidth + padX * 2);
+    const noteBlockHeight = noteLines.length ? (8 + noteLines.length * noteLineHeight) : 0;
+    const height = textLines.length * lineHeight + noteBlockHeight + padY * 2;
+    return { font, fontCss, padX, padY, textLines, noteLines, lineHeight, noteLineHeight, noteFontCss, width, height, depth };
+  }
+
+  function renderExportShapes(svg, svgNS, st, visibleNodeIds){
+    Object.values(st.shapes || {}).forEach(s => {
+      const opacity = (typeof s.opacity === 'number' ? s.opacity : 14) / 100;
+      let el;
+      const b = shapeBounds(s);
+      if (s.type === 'rect'){
+        el = document.createElementNS(svgNS, 'rect');
+        el.setAttribute('x', b.x); el.setAttribute('y', b.y);
+        el.setAttribute('width', b.w); el.setAttribute('height', b.h);
+        el.setAttribute('rx', 10);
+      } else if (s.type === 'ellipse'){
+        el = document.createElementNS(svgNS, 'ellipse');
+        el.setAttribute('cx', b.x + b.w/2); el.setAttribute('cy', b.y + b.h/2);
+        el.setAttribute('rx', b.w/2); el.setAttribute('ry', b.h/2);
+      } else if (s.type === 'pen'){
+        el = document.createElementNS(svgNS, 'polyline');
+        el.setAttribute('points', (s.points||[]).map(p => `${p.x},${p.y}`).join(' '));
+        el.setAttribute('fill', 'none');
+      }
+      if (!el) return;
+      el.setAttribute('stroke', s.color || '#c08a2e');
+      el.setAttribute('stroke-width', s.type === 'pen' ? 3 : 2);
+      if (s.type !== 'pen'){
+        el.setAttribute('fill', s.color || '#c08a2e');
+        el.setAttribute('fill-opacity', opacity);
+      }
+      svg.appendChild(el);
+      if (s.label){
+        const pad = 12;
+        const pos = s.labelPos || 'center';
+        let tx = b.x + b.w/2, ty = b.y + b.h/2, anchor = 'middle', baseline = 'middle';
+        if (pos.includes('l')){ tx = b.x + pad; anchor = 'start'; }
+        else if (pos.includes('r')){ tx = b.x + b.w - pad; anchor = 'end'; }
+        if (pos.startsWith('t')){ ty = b.y + pad + 8; baseline = 'hanging'; }
+        else if (pos.startsWith('b')){ ty = b.y + b.h - pad; baseline = 'alphabetic'; }
+        const text = document.createElementNS(svgNS, 'text');
+        text.setAttribute('x', tx);
+        text.setAttribute('y', baseline === 'hanging' ? ty - 6 : ty);
+        text.setAttribute('text-anchor', anchor);
+        text.setAttribute('dominant-baseline', baseline);
+        text.setAttribute('fill', s.color || '#1c1b19');
+        text.setAttribute('font-size', 15);
+        text.setAttribute('font-family', "'Patrick Hand', cursive");
+        text.textContent = s.label;
+        svg.appendChild(text);
+      }
+    });
+    Object.values(st.groups || {}).forEach(g => {
+      const boxes = g.memberIds.map(m => {
+        if (m.kind === 'node'){
+          const n = st.nodes[m.id];
+          if (!n || !visibleNodeIds.has(n.id)) return null;
+          return { x: n.x - 60, y: n.y - 30, w: 120, h: 60 };
+        }
+        const s = st.shapes[m.id];
+        return s ? shapeBounds(s) : null;
+      }).filter(Boolean);
+      if (!boxes.length) return;
+      const minX = Math.min(...boxes.map(b=>b.x)), minY = Math.min(...boxes.map(b=>b.y));
+      const maxX = Math.max(...boxes.map(b=>b.x+b.w)), maxY = Math.max(...boxes.map(b=>b.y+b.h));
+      const pad = 24;
+      const rect = document.createElementNS(svgNS, 'rect');
+      rect.setAttribute('x', minX - pad); rect.setAttribute('y', minY - pad);
+      rect.setAttribute('width', maxX - minX + pad*2); rect.setAttribute('height', maxY - minY + pad*2);
+      rect.setAttribute('rx', 14);
+      rect.setAttribute('fill', g.color);
+      rect.setAttribute('fill-opacity', (typeof g.opacity === 'number' ? g.opacity : 6) / 100);
+      rect.setAttribute('stroke', g.color);
+      rect.setAttribute('stroke-width', 1.5);
+      rect.setAttribute('stroke-dasharray', '5,4');
+      svg.appendChild(rect);
+      if (g.label){
+        const text = document.createElementNS(svgNS, 'text');
+        text.setAttribute('x', minX - pad + 10);
+        text.setAttribute('y', minY - pad - 8);
+        text.setAttribute('fill', g.color);
+        text.setAttribute('font-size', 18);
+        text.setAttribute('font-family', "'Caveat', cursive");
+        text.textContent = g.label;
+        svg.appendChild(text);
+      }
+    });
+  }
+
+  function buildExportSVG(customState){
+    const st = customState || state;
+    const nodes = exportVisibleNodes(st);
+    const hasShapes = Object.keys(st.shapes || {}).length > 0;
+    if (nodes.length === 0 && !hasShapes) return null;
+
+    const nodeSpecs = new Map();
+    nodes.forEach(n => nodeSpecs.set(n.id, { ...nodeBoxSpec(n, n.id === st.rootId), isRoot: n.id === st.rootId }));
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    nodes.forEach(n => {
+      const spec = nodeSpecs.get(n.id);
+      minX = Math.min(minX, n.x - spec.width/2); maxX = Math.max(maxX, n.x + spec.width/2);
+      minY = Math.min(minY, n.y - spec.height/2); maxY = Math.max(maxY, n.y + spec.height/2);
+    });
+    Object.values(st.shapes || {}).forEach(s => {
+      const b = shapeBounds(s);
+      minX = Math.min(minX, b.x); maxX = Math.max(maxX, b.x + b.w);
+      minY = Math.min(minY, b.y); maxY = Math.max(maxY, b.y + b.h);
+    });
+    if (!isFinite(minX)){ minX = -160; maxX = 160; minY = -80; maxY = 80; }
+
+    // Modest, capped whitespace — scaling off the diagonal span made padding balloon
+    // for spread-out/diagonal layouts, which is what produced the huge empty margins.
+    const contentW = maxX - minX, contentH = maxY - minY;
+    const pad = Math.min(140, Math.max(80, Math.round(Math.min(contentW, contentH) * 0.12)));
+    minX -= pad; maxX += pad; minY -= pad; maxY += pad;
     const w = maxX - minX, h = maxY - minY;
 
     const svgNS = 'http://www.w3.org/2000/svg';
@@ -2793,16 +3165,25 @@
     exportSvg.setAttribute('height', h);
     exportSvg.setAttribute('viewBox', `${minX} ${minY} ${w} ${h}`);
 
+    // Rasterizing this SVG via an off-DOM Image() does NOT inherit the page's already-loaded
+    // Google Fonts — without this it silently falls back to a generic system font, which is
+    // why exports looked nothing like the handwritten in-app style. Embedding the @import here
+    // makes the font load inside the SVG's own render context.
+    const fontStyle = document.createElementNS(svgNS, 'style');
+    fontStyle.textContent = "@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Patrick+Hand&display=swap');";
+    exportSvg.appendChild(fontStyle);
+
+    const background = st.background || DEFAULT_BG;
     const bg = document.createElementNS(svgNS, 'rect');
     bg.setAttribute('x', minX); bg.setAttribute('y', minY);
     bg.setAttribute('width', w); bg.setAttribute('height', h);
-    bg.setAttribute('fill', state.background || DEFAULT_BG);
+    bg.setAttribute('fill', background);
     exportSvg.appendChild(bg);
 
-    const set = new Set(nodes.map(n=>n.id));
+    const visibleSet = new Set(nodes.map(n=>n.id));
     nodes.forEach(n => {
-      if (!n.parent || !set.has(n.parent)) return;
-      const p = state.nodes[n.parent];
+      if (!n.parent || !visibleSet.has(n.parent)) return;
+      const p = st.nodes[n.parent];
       const d = stringPath(p, n);
       const parentColor = shadeColor(p.color, p.depth);
       const childColor = shadeColor(n.color, n.depth);
@@ -2815,7 +3196,7 @@
       casing.setAttribute('stroke-linecap', 'round');
       casing.setAttribute('opacity', '0.45');
       exportSvg.appendChild(casing);
-      if (state.linkStyle === 'flow'){
+      if (st.linkStyle === 'flow'){
         const tread = document.createElementNS(svgNS,'path');
         tread.setAttribute('d', d);
         tread.setAttribute('stroke', '#fffdf8');
@@ -2830,68 +3211,131 @@
       drawPin(exportSvg, svgNS, n.x, n.y, childColor);
     });
 
+    renderExportShapes(exportSvg, svgNS, st, visibleSet);
+
     nodes.forEach(n => {
-      const isRoot = n.id === state.rootId;
-      const textWidth = Math.min(Math.max(n.text.length * 9, 60), 240);
-      const rectW = textWidth + 32, rectH = isRoot ? 54 : 46;
+      const spec = nodeSpecs.get(n.id);
+      const isRoot = spec.isRoot;
       const g = document.createElementNS(svgNS, 'g');
+      const rectX = n.x - spec.width/2, rectY = n.y - spec.height/2, rx = isRoot ? 16 : 12;
       const rect = document.createElementNS(svgNS, 'rect');
-      rect.setAttribute('x', n.x - rectW/2);
-      rect.setAttribute('y', n.y - rectH/2);
-      rect.setAttribute('width', rectW);
-      rect.setAttribute('height', rectH);
-      rect.setAttribute('rx', isRoot ? 16 : 12);
+      rect.setAttribute('x', rectX);
+      rect.setAttribute('y', rectY);
+      rect.setAttribute('width', spec.width);
+      rect.setAttribute('height', spec.height);
+      rect.setAttribute('rx', rx);
       rect.setAttribute('fill', isRoot ? '#1c1b19' : '#fffdf8');
       rect.setAttribute('stroke', isRoot ? '#1c1b19' : 'rgba(28,27,25,0.15)');
+      g.appendChild(rect);
       if (!isRoot){
+        // Clip the stripe to the card's own rounded-rect shape, otherwise its sharp
+        // corners poke past the card outline instead of following the curve like the
+        // live CSS border-left does.
+        const clipId = 'clip-' + n.id;
+        const clipPath = document.createElementNS(svgNS, 'clipPath');
+        clipPath.setAttribute('id', clipId);
+        const clipRect = document.createElementNS(svgNS, 'rect');
+        clipRect.setAttribute('x', rectX); clipRect.setAttribute('y', rectY);
+        clipRect.setAttribute('width', spec.width); clipRect.setAttribute('height', spec.height);
+        clipRect.setAttribute('rx', rx);
+        clipPath.appendChild(clipRect);
+        g.appendChild(clipPath);
+        const stripeW = DEPTH_STRIPE_WIDTH[spec.depth] || 2;
         const stripe = document.createElementNS(svgNS,'rect');
-        stripe.setAttribute('x', n.x - rectW/2);
-        stripe.setAttribute('y', n.y - rectH/2);
-        stripe.setAttribute('width', 4);
-        stripe.setAttribute('height', rectH);
+        stripe.setAttribute('x', rectX);
+        stripe.setAttribute('y', rectY);
+        stripe.setAttribute('width', stripeW);
+        stripe.setAttribute('height', spec.height);
         stripe.setAttribute('fill', shadeColor(n.color, n.depth));
-        g.appendChild(rect);
+        stripe.setAttribute('clip-path', `url(#${clipId})`);
         g.appendChild(stripe);
-      } else {
-        g.appendChild(rect);
       }
-      const text = document.createElementNS(svgNS, 'text');
-      text.setAttribute('x', n.x);
-      text.setAttribute('y', n.y + (isRoot ? 8 : 6));
-      text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('font-family', isRoot ? 'Caveat, cursive' : 'Patrick Hand, cursive');
-      text.setAttribute('font-weight', isRoot ? '700' : '400');
-      text.setAttribute('font-size', isRoot ? '25' : '19');
-      text.setAttribute('fill', isRoot ? '#f3ede2' : '#1c1b19');
-      text.textContent = n.text.length > 34 ? n.text.slice(0,32) + '…' : n.text;
-      g.appendChild(text);
+
+      const totalTextHeight = spec.textLines.length * spec.lineHeight;
+      let cursorY = n.y - spec.height/2 + spec.padY + spec.font.size * 0.85;
+      spec.textLines.forEach(line => {
+        const text = document.createElementNS(svgNS, 'text');
+        text.setAttribute('x', n.x);
+        text.setAttribute('y', cursorY);
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('font-family', spec.font.family);
+        text.setAttribute('font-weight', spec.font.weight);
+        text.setAttribute('font-size', spec.font.size);
+        text.setAttribute('fill', isRoot ? '#f3ede2' : '#1c1b19');
+        text.textContent = line;
+        g.appendChild(text);
+        cursorY += spec.lineHeight;
+      });
+      if (spec.noteLines.length){
+        let noteY = n.y - spec.height/2 + spec.padY + totalTextHeight + 8 + 11;
+        spec.noteLines.forEach(line => {
+          const noteText = document.createElementNS(svgNS, 'text');
+          noteText.setAttribute('x', n.x);
+          noteText.setAttribute('y', noteY);
+          noteText.setAttribute('text-anchor', 'middle');
+          noteText.setAttribute('font-family', "'Patrick Hand', cursive");
+          noteText.setAttribute('font-size', 11);
+          noteText.setAttribute('fill', 'rgba(28,27,25,0.55)');
+          noteText.textContent = line;
+          g.appendChild(noteText);
+          noteY += spec.noteLineHeight;
+        });
+      }
+      const kids = exportChildren(st, n.id);
+      if (n.collapsed && kids.length > 0){
+        let count = 0;
+        const stack = kids.slice();
+        while (stack.length){ const c = stack.pop(); count++; stack.push(...exportChildren(st, c.id)); }
+        const bx = n.x + spec.width/2, by = n.y - spec.height/2;
+        const badge = document.createElementNS(svgNS, 'circle');
+        badge.setAttribute('cx', bx); badge.setAttribute('cy', by);
+        badge.setAttribute('r', 9.5);
+        badge.setAttribute('fill', '#c08a2e');
+        g.appendChild(badge);
+        const badgeText = document.createElementNS(svgNS, 'text');
+        badgeText.setAttribute('x', bx); badgeText.setAttribute('y', by + 3.5);
+        badgeText.setAttribute('text-anchor', 'middle');
+        badgeText.setAttribute('font-family', "'Inter', sans-serif");
+        badgeText.setAttribute('font-size', 10);
+        badgeText.setAttribute('font-weight', 700);
+        badgeText.setAttribute('fill', '#fffdf8');
+        badgeText.textContent = String(count);
+        g.appendChild(badgeText);
+      }
       exportSvg.appendChild(g);
     });
 
-    return { exportSvg, minX, minY, w, h, nodes };
+    return { exportSvg, minX, minY, w, h, nodes, background };
   }
 
-  function svgToCanvas(exportSvg, w, h, scale){
+  function svgToCanvas(exportSvg, w, h, scale, background){
     return new Promise((resolve, reject) => {
-      const serializer = new XMLSerializer();
-      const svgStr = serializer.serializeToString(exportSvg);
-      const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(svgBlob);
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = w * scale;
-        canvas.height = h * scale;
-        const ctx = canvas.getContext('2d');
-        ctx.scale(scale, scale);
-        ctx.fillStyle = state.background || DEFAULT_BG;
-        ctx.fillRect(0,0,w,h);
-        ctx.drawImage(img, 0, 0, w, h);
-        URL.revokeObjectURL(url);
-        resolve(canvas);
-      };
-      img.onerror = reject;
-      img.src = url;
+      const fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready.catch(() => {}) : Promise.resolve();
+      fontsReady.then(() => {
+        const serializer = new XMLSerializer();
+        const svgStr = serializer.serializeToString(exportSvg);
+        const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        const draw = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = w * scale;
+          canvas.height = h * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.scale(scale, scale);
+          ctx.fillStyle = background || DEFAULT_BG;
+          ctx.fillRect(0,0,w,h);
+          ctx.drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(url);
+          resolve(canvas);
+        };
+        img.onload = () => {
+          if (img.decode) img.decode().then(draw).catch(draw);
+          else draw();
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('svg image failed to load')); };
+        img.src = url;
+      });
     });
   }
 
@@ -2905,56 +3349,89 @@
       children(id).forEach(c => walk(c.id, depth + 1));
     }
     walk(state.rootId, 0);
-    const blob = new Blob([lines.join('\\n')], { type: 'text/markdown' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'mindmap-outline.md';
-    a.click();
+    downloadBlob(safeFileName(mapTitle()) + '-outline.md', new Blob([lines.join('\\n')], { type: 'text/markdown' }));
   };
 
   document.getElementById('btn-export-png').onclick = async () => {
     const built = buildExportSVG();
-    if (!built) return;
+    if (!built){ alert('Nothing to export yet — add a card or two first.'); return; }
     try{
-      const canvas = await svgToCanvas(built.exportSvg, built.w, built.h, 2);
-      canvas.toBlob((blob) => {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'mindmap.png';
-        a.click();
-      });
+      const canvas = await svgToCanvas(built.exportSvg, built.w, built.h, 2, built.background);
+      canvas.toBlob((blob) => downloadBlob(safeFileName(mapTitle()) + '.png', blob));
     } catch(err){
       alert('Could not export the image. Please try again.');
     }
   };
 
-  document.getElementById('btn-export-pdf').onclick = async () => {
-    const built = buildExportSVG();
-    if (!built) return;
+  async function exportPdf(st, filename){
+    const built = buildExportSVG(st);
+    if (!built){ alert('Nothing to export yet — add a card or two first.'); return; }
     if (typeof window.jspdf === 'undefined'){
       alert('PDF export needs an internet connection to load one small library. Please check your connection and try again.');
       return;
     }
     try{
-      const scale = 2;
-      const canvas = await svgToCanvas(built.exportSvg, built.w, built.h, scale);
+      const canvas = await svgToCanvas(built.exportSvg, built.w, built.h, 2, built.background);
       const { jsPDF } = window.jspdf;
       const orientation = built.w >= built.h ? 'landscape' : 'portrait';
       const pdf = new jsPDF({ orientation, unit: 'pt', format: [built.w, built.h] });
       const imgData = canvas.toDataURL('image/jpeg', 0.95);
       pdf.addImage(imgData, 'JPEG', 0, 0, built.w, built.h);
-      pdf.save('mindmap.pdf');
+      pdf.save(filename);
     } catch(err){
       alert('Could not export the PDF. Please try again.');
+    }
+  }
+  async function exportAllMapsPdf(){
+    if (typeof window.jspdf === 'undefined'){
+      alert('PDF export needs an internet connection to load one small library. Please check your connection and try again.');
+      return;
+    }
+    const maps = getAllMapsData();
+    const pages = [];
+    maps.forEach(m => {
+      const built = buildExportSVG(m.state);
+      if (built) pages.push(built);
+    });
+    if (!pages.length){ alert('Nothing to export yet — add a card or two first.'); return; }
+    try{
+      const { jsPDF } = window.jspdf;
+      let pdf = null;
+      for (const built of pages){
+        const canvas = await svgToCanvas(built.exportSvg, built.w, built.h, 2, built.background);
+        const orientation = built.w >= built.h ? 'landscape' : 'portrait';
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        if (!pdf) pdf = new jsPDF({ orientation, unit: 'pt', format: [built.w, built.h] });
+        else pdf.addPage([built.w, built.h], orientation);
+        pdf.addImage(imgData, 'JPEG', 0, 0, built.w, built.h);
+      }
+      pdf.save('branch-all-mindmaps.pdf');
+    } catch(err){
+      alert('Could not export the combined PDF. Please try again.');
+    }
+  }
+  document.getElementById('btn-export-pdf').onclick = () => {
+    const idx = loadIndex();
+    if (idx.length > 1){
+      promptExportScope({
+        title: 'Export PDF',
+        message: `You have ${idx.length} mind maps open. Export just this one, or all of them as a multi-page PDF?`,
+        currentLabel: 'This map',
+        allLabel: 'All maps',
+        onCurrent: () => exportPdf(state, safeFileName(mapTitle()) + '.pdf'),
+        onAll: exportAllMapsPdf
+      });
+    } else {
+      exportPdf(state, safeFileName(mapTitle()) + '.pdf');
     }
   };
 
   document.getElementById('btn-export-html').onclick = () => {
     const built = buildExportSVG();
-    if (!built) return;
+    if (!built){ alert('Nothing to export yet — add a card or two first.'); return; }
     const serializer = new XMLSerializer();
     const svgStr = serializer.serializeToString(built.exportSvg);
-    const title = (state.nodes[state.rootId] && state.nodes[state.rootId].text) || 'Mind Map';
+    const title = mapTitle();
     const doc = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2964,7 +3441,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Patrick+Hand&display=swap" rel="stylesheet">
 <style>
-  html,body{ margin:0; height:100%; background:${escapeHtml(state.background || DEFAULT_BG)}; overflow:auto;
+  html,body{ margin:0; height:100%; background:${escapeHtml(built.background)}; overflow:auto;
     font-family:'Patrick Hand', cursive; }
   #wrap{ min-height:100%; display:flex; align-items:center; justify-content:center; padding:32px; }
   svg{ max-width:100%; height:auto; }
@@ -2977,11 +3454,7 @@
 <div id="badge">Read-only export · made with Branch</div>
 </body>
 </html>`;
-    const blob = new Blob([doc], { type: 'text/html' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'mindmap-readonly.html';
-    a.click();
+    downloadBlob(safeFileName(mapTitle()) + '-readonly.html', new Blob([doc], { type: 'text/html' }));
   };
 
   function escapeHtml(str){
